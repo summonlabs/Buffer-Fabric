@@ -1,0 +1,8 @@
+# Normalise line endings in the repository so that a fresh clone builds
+# identically on every platform.
+* text=auto eol=lf
+
+# Binary assets, if any are ever added, are never normalised.
+*.png binary
+*.jpg binary
+*.zip binary
