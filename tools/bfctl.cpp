@@ -150,6 +150,29 @@ int run_command(const std::string& command, const bftool::Arguments& arguments,
         return 0;
     }
     if (command == "allocate") {
+        // Evidence is bound to the fabric epoch, and every bfctl invocation is
+        // a fresh open with a new epoch. An operator who wants to allocate
+        // within this invocation publishes evidence from the fabric's own
+        // authoritative state first, which is exactly what an in-process
+        // embedder does.
+        if (arguments.has("--observe-first")) {
+            const PoolId target = PoolId::from_raw(arguments.number("--pool", kPoolId));
+            auto explanation = fabric.explain(target);
+            if (!explanation.ok()) return fail(explanation.status());
+            PressureSnapshot snapshot;
+            snapshot.pool = target;
+            snapshot.pool_generation = explanation.value().pool_generation;
+            snapshot.epoch = fabric.epoch();
+            snapshot.boot = fabric.boot_incarnation();
+            snapshot.ttl_ticks = arguments.number("--ttl", 10'000'000'000ull);
+            snapshot.demand_units = arguments.number("--demand", 0);
+            snapshot.committed_units = explanation.value().allocated_units -
+                                       explanation.value().borrowed_in_units +
+                                       explanation.value().lent_out_units;
+            snapshot.assert_committed = true;
+            const Status observed = fabric.observe_pressure(snapshot);
+            if (!observed.ok()) return fail(observed);
+        }
         AllocateRequest request;
         request.attempt = AttemptId::from_raw(arguments.number("--attempt", 1));
         request.pool = PoolId::from_raw(arguments.number("--pool", kPoolId));
@@ -205,7 +228,8 @@ int main(int argc, char** argv) {
             "    summary | ledger | verify | checkpoint\n"
             "    explain --pool N\n"
             "    observe --pool N [--demand N] [--ttl TICKS]\n"
-            "    allocate --pool N --queue-id N --units N --attempt N [--reserve] [--pinned]\n"
+            "    allocate --pool N --queue-id N --units N --attempt N [--observe-first]\n"
+            "             [--reserve] [--pinned]\n"
             "    release --allocation N --attempt N [--units N]");
         return command.empty() ? 1 : 0;
     }

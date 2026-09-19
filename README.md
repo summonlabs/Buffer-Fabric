@@ -249,6 +249,7 @@ and Clang.
     bfctl --state-dir DIR init --capacity N --pool-units N --protected N --queue-id N
     bfctl --state-dir DIR observe --pool 1
     bfctl --state-dir DIR allocate --pool 1 --queue-id 1 --units 4096 --attempt 1
+    bfctl --state-dir DIR allocate --observe-first --pool 1 --queue-id 1 --units 4096 --attempt 1
     bfctl --state-dir DIR explain --pool 1
     bfctl --state-dir DIR ledger
     bfctl --state-dir DIR verify
@@ -256,8 +257,16 @@ and Clang.
 
 Every `bfctl` invocation opens the fabric from the state directory, performs one
 command and closes it. Because the fabric advances its epoch on every open, each
-invocation is a genuine restart: pressure evidence from a previous invocation is
-reported as STALE and must be revalidated.
+invocation is a genuine restart: pressure evidence recorded by a previous
+invocation is reported as STALE, and an unqualified `allocate` is therefore
+refused with `REVALIDATE`. That is the intended behaviour, not a defect — a
+one-shot process cannot carry live authority across a process boundary.
+
+`--observe-first` publishes evidence from the fabric's own authoritative state
+inside the same invocation, which is exactly what an in-process embedder does,
+and is the supported way to exercise allocation from the command line. The
+coordinator, which holds one fabric open for its whole lifetime, is the intended
+path for sustained multi-process work.
 
 `bfbench` runs the synthetic benchmark. `bf_coordinator` and `bf_worker` are the real
 multiprocess pair described below.
@@ -417,18 +426,25 @@ network, NIC, switch or device measurement. Enqueue or submission latency is
 never reported; an operation is counted only once the fabric has accepted it and
 the accounting identity has been verified.
 
-Representative result (Windows 11, MSVC 19.44, Release, 8 pools, 16 queues per
-pool, seed 24301, 300 000 iterations):
+Representative result: Windows 11, MSVC 19.44, Release, 8 pools, 16 queues per
+pool, seed 24301, 300 000 iterations. The figures below are one run on an idle
+machine; repeat runs on the same machine varied by up to roughly a factor of two
+in the mutation-heavy scenarios, so these are indicative of order of magnitude,
+not a calibrated measurement.
 
 | Scenario | Completed operations | Seconds | Operations/s |
 | --- | --- | --- | --- |
-| allocate + release | 600 000 | 1.223 | 490 749 |
-| fill then reclaim | 61 440 | 2.047 | 30 012 |
-| fragmentation | 6 144 | 0.057 | 108 493 |
-| evaluate (read-only) | 300 000 | 0.172 | 1 745 066 |
-| pressure transitions | 60 | 0.0005 | 117 670 |
+| allocate + release | 600 000 | 1.11 | 541 846 |
+| fill then reclaim | 61 440 | 1.94 | 31 611 |
+| fragmentation | 6 144 | 0.058 | 106 448 |
+| evaluate (read-only) | 300 000 | 0.146 | 2 055 194 |
+| pressure transitions | 60 | 0.0004 | 137 836 |
 
-Accounting closure held in every scenario.
+Accounting closure held in every scenario, in every run.
+
+`fill_then_reclaim` is dominated by filling each pool to its limit and then
+revoking every commitment; its throughput is bounded by the number of
+allocations that fit, not by the rate of requests.
 
 ---
 

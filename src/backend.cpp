@@ -75,11 +75,15 @@ Result<CapacityAuthority> SyntheticBackend::query_capacity(ResourceId resource) 
 
 VoidResult SyntheticBackend::program_reservation(ResourceId resource, u64 units,
                                                  Generation expected_backend_generation) {
-    reservation_calls_.fetch_add(1, std::memory_order_relaxed);
-    unsupported_calls_.fetch_add(1, std::memory_order_relaxed);
     BF_UNUSED(resource);
-    BF_UNUSED(units);
-    BF_UNUSED(expected_backend_generation);
+    reservation_calls_.fetch_add(1, std::memory_order_relaxed);
+    reservation_units_.fetch_add(units, std::memory_order_relaxed);
+    if (expected_backend_generation.valid() && expected_backend_generation != generation_) {
+        stale_generation_rejections_.fetch_add(1, std::memory_order_relaxed);
+        return Status(ErrorCode::StaleGeneration,
+                      "synthetic backend was asked to program against a stale generation");
+    }
+    unsupported_calls_.fetch_add(1, std::memory_order_relaxed);
     // A synthetic backend has no device to program. Reporting Unsupported here
     // is the honest answer; the fabric records that no hardware effect was
     // applied instead of assuming one succeeded.
@@ -88,10 +92,10 @@ VoidResult SyntheticBackend::program_reservation(ResourceId resource, u64 units,
 }
 
 VoidResult SyntheticBackend::program_release(ResourceId resource, u64 units) {
-    release_calls_.fetch_add(1, std::memory_order_relaxed);
-    unsupported_calls_.fetch_add(1, std::memory_order_relaxed);
     BF_UNUSED(resource);
-    BF_UNUSED(units);
+    release_calls_.fetch_add(1, std::memory_order_relaxed);
+    release_units_.fetch_add(units, std::memory_order_relaxed);
+    unsupported_calls_.fetch_add(1, std::memory_order_relaxed);
     return Status(ErrorCode::Unsupported,
                   "synthetic backend applies no physical device effect");
 }

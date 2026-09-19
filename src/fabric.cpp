@@ -97,16 +97,6 @@ Status BufferFabric::Impl::check_closure(const PoolEntry& entry) const {
     return report.status();
 }
 
-AccountingReport BufferFabric::Impl::check_all_closures() const {
-    std::vector<PoolAccounting> all;
-    all.reserve(pools_.size());
-    for (const auto& [id, entry] : pools_) {
-        BF_UNUSED(id);
-        all.push_back(accounting_of(entry));
-    }
-    return check_global_accounting(all);
-}
-
 void BufferFabric::Impl::rebuild_aggregates() {
     for (auto& [id, entry] : pools_) {
         BF_UNUSED(id);

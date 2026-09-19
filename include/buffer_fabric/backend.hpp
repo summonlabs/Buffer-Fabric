@@ -111,7 +111,9 @@ public:
     void set_generation(Generation generation) noexcept { generation_ = generation; }
 
     /// Recorded physical effect attempts, for tests that assert the backend was
-    /// consulted with the exact expected generation.
+    /// consulted with the exact expected generation. Unit counters are the
+    /// amounts that were *requested*, not amounts that were applied: this
+    /// backend applies nothing.
     struct EffectLog {
         u64 reservation_calls{0};
         u64 release_calls{0};

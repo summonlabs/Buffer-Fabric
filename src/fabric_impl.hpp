@@ -169,7 +169,6 @@ struct BufferFabric::Impl {
 
     [[nodiscard]] PoolAccounting accounting_of(const PoolEntry& entry) const;
     [[nodiscard]] Status check_closure(const PoolEntry& entry) const;
-    [[nodiscard]] AccountingReport check_all_closures() const;
 
     /// Recompute every aggregate from the allocation set. Destroys nothing.
     void rebuild_aggregates();
@@ -197,7 +196,6 @@ struct BufferFabric::Impl {
         u64 lender_free{0};
         u64 max_grant{0};
         BindingConstraint binding{BindingConstraint::None};
-        u64 binding_limit{0};
     };
     [[nodiscard]] GrantComputation compute_grant(const PoolEntry& entry, const PoolPolicy& policy,
                                                  u64 requested) const;

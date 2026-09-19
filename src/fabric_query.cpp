@@ -795,6 +795,11 @@ Result<std::string> BufferFabric::accounting_text() const {
 Status BufferFabric::checkpoint() {
     BufferFabric::Impl::Lock guard(*impl_);
     if (!impl_->open_) return Status(ErrorCode::LifecycleViolation, "fabric is not open");
+    // A durable image is only ever written from a state that closes. A
+    // violation here means the in-memory ledger is already inconsistent, and
+    // persisting it would make the inconsistency durable.
+    const AccountingReport report = impl_->deep_verify();
+    if (!report.closed) return report.status();
     return impl_->write_full_snapshot();
 }
 

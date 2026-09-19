@@ -164,17 +164,10 @@ BufferFabric::Impl::GrantComputation BufferFabric::Impl::compute_grant(const Poo
     }
 
     computation.max_grant = sat_add(own_allowance, computation.borrowable);
-    if (computation.max_grant == 0) {
-        computation.binding = policy.overcommit.mode == OvercommitMode::Bounded
-                                  ? BindingConstraint::OvercommitLimit
-                                  : BindingConstraint::Capacity;
-        computation.binding_limit = 0;
-    } else if (own_allowance == 0) {
-        computation.binding = BindingConstraint::Capacity;
-        computation.binding_limit = 0;
+    if (computation.max_grant == 0 && policy.overcommit.mode == OvercommitMode::Bounded) {
+        computation.binding = BindingConstraint::OvercommitLimit;
     } else {
         computation.binding = BindingConstraint::Capacity;
-        computation.binding_limit = own_allowance;
     }
     return computation;
 }
@@ -506,13 +499,11 @@ Result<Decision> BufferFabric::Impl::allocate_locked(const AllocateRequest& requ
     GrantComputation computation = compute_grant(*entry, policy, request.requested_units);
     u64 limit = computation.max_grant;
     BindingConstraint binding = computation.binding;
-    u64 binding_limit = computation.binding_limit;
 
     auto apply_cap = [&](u64 cap, BindingConstraint constraint) {
         if (cap < limit) {
             limit = cap;
             binding = constraint;
-            binding_limit = cap;
         }
     };
 
@@ -1108,9 +1099,11 @@ Result<Decision> BufferFabric::Impl::fence_stale_locked(PoolId pool_id, std::vec
         return Status(ErrorCode::UnknownPolicy, "pool policy is not published");
     }
     const PoolPolicy& policy = policy_it->second;
-    QueueDescriptor placeholder;
-    placeholder.id = QueueId::from_raw(0);
-    placeholder.pool = pool_id;
+    // A whole-pool operation is not attached to one queue: the descriptor carries
+    // only the pool identity used by the authority vector.
+    QueueDescriptor pool_scope;
+    pool_scope.id = QueueId::from_raw(0);
+    pool_scope.pool = pool_id;
     const Tick stamp = now();
     const PressureEvidence evidence = resolve_evidence(*entry);
 
@@ -1138,11 +1131,11 @@ Result<Decision> BufferFabric::Impl::fence_stale_locked(PoolId pool_id, std::vec
                                       ErrorCode::Ok,
                                       fenced_allocations == 0 ? "no stale allocations"
                                                               : "stale allocations fenced",
-                                      *entry, placeholder, 0, fenced_units, AllocationId{},
+                                      *entry, pool_scope, 0, fenced_units, AllocationId{},
                                       BindingConstraint::GenerationMismatch, evidence,
                                       accounting_of(*entry), stamp, next_decision_sequence_);
     decision.intent.fence_required = fenced_allocations != 0;
-    bind_authority(&decision.authority, *entry, placeholder, policy, AttemptId{},
+    bind_authority(&decision.authority, *entry, pool_scope, policy, AttemptId{},
                    ProvenanceId{}, evidence.snapshot, epoch_, boot_, PoolId{});
     record_decision(decision);
     ++next_decision_sequence_;
@@ -1162,8 +1155,10 @@ Result<Decision> BufferFabric::Impl::expire_reservations_locked(PoolId pool_id,
     const PoolPolicy& policy = policy_it->second;
     const Tick stamp = now();
     const PressureEvidence evidence = resolve_evidence(*entry);
-    QueueDescriptor placeholder;
-    placeholder.pool = pool_id;
+    // A whole-pool operation is not attached to one queue: the descriptor carries
+    // only the pool identity used by the authority vector.
+    QueueDescriptor pool_scope;
+    pool_scope.pool = pool_id;
 
     u64 expired = 0;
     u64 expired_units = 0;
@@ -1189,10 +1184,10 @@ Result<Decision> BufferFabric::Impl::expire_reservations_locked(PoolId pool_id,
                                       ErrorCode::Ok,
                                       expired == 0 ? "no reservations expired"
                                                    : "reservations expired",
-                                      *entry, placeholder, 0, expired_units, AllocationId{},
+                                      *entry, pool_scope, 0, expired_units, AllocationId{},
                                       BindingConstraint::None, evidence, accounting_of(*entry),
                                       stamp, next_decision_sequence_);
-    bind_authority(&decision.authority, *entry, placeholder, policy, AttemptId{},
+    bind_authority(&decision.authority, *entry, pool_scope, policy, AttemptId{},
                    ProvenanceId{}, evidence.snapshot, epoch_, boot_, PoolId{});
     record_decision(decision);
     ++next_decision_sequence_;
