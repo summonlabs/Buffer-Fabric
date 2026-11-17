@@ -218,7 +218,10 @@ Result<Socket> Socket::listen(const std::string& address, u16 port, u16* bound_p
 
     int one = 1;
 #if defined(_WIN32)
-    ::setsockopt(handle, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
+    // SO_REUSEADDR on Windows lets a second socket bind a port that is still
+    // listening; exclusive use makes that second bind fail instead.
+    ::setsockopt(handle, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&one),
+                 sizeof(one));
 #else
     ::setsockopt(handle, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 #endif

@@ -1,9 +1,16 @@
+#include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "buffer_fabric/coordinator.hpp"
 #include "buffer_fabric/transport.hpp"
 #include "buffer_fabric/version.hpp"
 #include "test_support.hpp"
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 using namespace buffer_fabric;
 using bftest::Harness;
@@ -344,4 +351,94 @@ BF_TEST(adversarial, attempt_memory_is_bounded) {
     auto attempts = harness.fabric.attempt_history(1000);
     BF_REQUIRE(attempts.ok());
     BF_CHECK(attempts.value().size() <= usize{4});
+}
+
+namespace {
+
+// One complete session against an in-process coordinator: connected, a ping
+// answered, and closed. A refused connection gets an error HelloAck instead.
+bool ping_once(u16 port) {
+    auto socket = Socket::connect_to("127.0.0.1", port);
+    if (!socket.ok()) return false;
+    Message ping;
+    ping.op = MessageOp::Ping;
+    ping.request = RequestId::from_raw(1);
+    const auto frame = encode_message(ping);
+    if (!socket.value().send_all(frame.data(), frame.size()).ok()) return false;
+    auto reply = socket.value().receive_frame(kMaxFrameBytes);
+    if (!reply.ok()) return false;
+    auto decoded =
+        decode_message_payload(reply.value().data(), reply.value().size(), kMaxFrameBytes);
+    return decoded.ok() && decoded.value().op == MessageOp::Ping;
+}
+
+}  // namespace
+
+BF_TEST(adversarial, finished_clients_give_their_slot_back) {
+    Coordinator coordinator;
+    CoordinatorConfig config;
+    config.max_clients = 4;
+    const Status started = coordinator.start(config);
+    BF_CHECK(started.ok());
+    if (!started.ok()) return;
+    const auto port = coordinator.port();
+    BF_CHECK(port.ok());
+    if (!port.ok()) {
+        (void)coordinator.stop();
+        return;
+    }
+    // Each session is closed before the next one starts, so only the most
+    // recent ones can still be winding down when the next connects. The client
+    // bound counts live sessions, so every one of them must be served.
+    int served = 0;
+    for (int index = 0; index < 12; ++index) {
+        if (ping_once(port.value())) ++served;
+    }
+    (void)coordinator.stop();
+    BF_CHECK(served == 12);
+}
+
+#if defined(_WIN32)
+BF_TEST(adversarial, finished_sessions_release_their_threads) {
+    Coordinator coordinator;
+    CoordinatorConfig config;
+    config.max_clients = 1000;
+    const Status started = coordinator.start(config);
+    BF_CHECK(started.ok());
+    if (!started.ok()) return;
+    const auto port = coordinator.port();
+    BF_CHECK(port.ok());
+    if (!port.ok()) {
+        (void)coordinator.stop();
+        return;
+    }
+    const bool first_served = ping_once(port.value());
+    DWORD before = 0;
+    const bool counted_before = ::GetProcessHandleCount(::GetCurrentProcess(), &before) != 0;
+    constexpr int kSessions = 100;
+    int served = 0;
+    for (int index = 0; index < kSessions; ++index) {
+        if (ping_once(port.value())) ++served;
+    }
+    DWORD after = 0;
+    const bool counted_after = ::GetProcessHandleCount(::GetCurrentProcess(), &after) != 0;
+    (void)coordinator.stop();
+    BF_CHECK(first_served);
+    BF_CHECK(counted_before && counted_after);
+    BF_CHECK(served == kSessions);
+    // A retained session thread keeps its handle, so growth that tracks the
+    // session count is the defect.
+    BF_CHECK(after < before + 64);
+}
+#endif
+
+BF_TEST(adversarial, a_second_listener_cannot_take_a_listening_port) {
+    u16 port = 0;
+    auto first = Socket::listen("127.0.0.1", 0, &port);
+    BF_CHECK(first.ok());
+    if (!first.ok()) return;
+    u16 second_port = 0;
+    auto second = Socket::listen("127.0.0.1", port, &second_port);
+    // Two coordinators must never share one listening port: the second bind fails.
+    BF_CHECK(!second.ok());
 }

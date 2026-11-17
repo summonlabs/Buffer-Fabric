@@ -1,5 +1,6 @@
 #include "buffer_fabric/coordinator.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -29,7 +30,13 @@ struct Coordinator::Impl {
     std::thread accept_thread_{};
     std::mutex clients_mutex_{};
     std::vector<std::shared_ptr<Socket>> clients_{};
-    std::vector<std::thread> sessions_{};
+    // A session thread sets its flag as its last act; finished sessions are
+    // joined and dropped at the next accept instead of being kept until stop().
+    struct Session {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> exited;
+    };
+    std::vector<Session> sessions_{};
     u64 resource_id_{1};
     u64 pool_id_{1};
     u64 queue_id_{1};
@@ -59,7 +66,7 @@ Coordinator::~Coordinator() {
         }
         if (impl_->accept_thread_.joinable()) impl_->accept_thread_.join();
         for (auto& session : impl_->sessions_) {
-            if (session.joinable()) session.join();
+            if (session.thread.joinable()) session.thread.join();
         }
     }
 }
@@ -227,7 +234,20 @@ void Coordinator::Impl::accept_loop() {
             }
             clients_.push_back(socket);
         }
-        sessions_.emplace_back([this, socket] { serve(socket); });
+        for (auto it = sessions_.begin(); it != sessions_.end();) {
+            if (it->exited->load()) {
+                it->thread.join();
+                it = sessions_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        auto exited = std::make_shared<std::atomic<bool>>(false);
+        sessions_.push_back(Session{std::thread([this, socket, exited] {
+                                        serve(socket);
+                                        exited->store(true);
+                                    }),
+                                    exited});
     }
 }
 
@@ -532,6 +552,10 @@ void Coordinator::Impl::serve(std::shared_ptr<Socket> peer) {
     }
     peer->shutdown();
     peer->close();
+    // The finished session gives its slot back: the client bound counts live
+    // sessions, not every connection the coordinator has served.
+    std::lock_guard<std::mutex> guard(clients_mutex_);
+    clients_.erase(std::remove(clients_.begin(), clients_.end(), peer), clients_.end());
 }
 
 Result<u16> Coordinator::port() const {
@@ -560,7 +584,7 @@ Status Coordinator::stop() {
     request_shutdown();
     if (impl_->accept_thread_.joinable()) impl_->accept_thread_.join();
     for (auto& session : impl_->sessions_) {
-        if (session.joinable()) session.join();
+        if (session.thread.joinable()) session.thread.join();
     }
     impl_->sessions_.clear();
     {

@@ -1,6 +1,8 @@
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include "test_support.hpp"
 
@@ -354,5 +356,32 @@ BF_TEST(persistence, recovery_report_is_json_encodable) {
     const std::string text = harness.fabric.recovery_report().to_json();
     BF_CHECK(text.find("\"outcome\"") != std::string::npos);
     BF_CHECK(text.find("\"journal_records_applied\"") != std::string::npos);
+    BF_REQUIRE(harness.fabric.close().ok());
+}
+
+BF_TEST(persistence, a_checkpoint_waits_for_a_reader_to_close) {
+    TempDirectory directory("checkpoint-reader");
+    Harness harness;
+    OPEN_DURABLE(harness, directory);
+    BF_REQUIRE(harness.observe_current().ok());
+    BF_REQUIRE(harness.allocate(1000).ok());
+    BF_REQUIRE(harness.fabric.checkpoint().ok());
+    bool reader_opened = false;
+    bool checkpointed = false;
+    {
+        // Another tool reading the store (an inspection, a scan) holds the
+        // snapshot open while the next checkpoint replaces it, and closes it
+        // shortly after.
+        std::ifstream reader(directory.file("fabric.bfs"), std::ios::binary);
+        reader_opened = reader.is_open();
+        auto& fabric = harness.fabric;
+        std::thread writer([&fabric, &checkpointed] { checkpointed = fabric.checkpoint().ok(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        reader.close();
+        writer.join();
+    }
+    BF_CHECK(reader_opened);
+    // The checkpoint is not lost because a reader had the snapshot open for a moment.
+    BF_CHECK(checkpointed);
     BF_REQUIRE(harness.fabric.close().ok());
 }
